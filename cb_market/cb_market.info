@@ -1,0 +1,6 @@
+name = Clickbank Market
+description = Daily downloads and mines information about all the Clickbank products. For use in building an application that directs traffic to affilaite product.
+package = "* CB"
+core = 6.x
+ 
+

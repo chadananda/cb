@@ -1,0 +1,212 @@
+<?php
+
+
+// downloads and parses entire clickbank market database each day
+// in order to provide market and keyword services
+
+// TODO:  
+
+
+
+/**
+ * Implementation of hook_help().
+ */
+function cb_market_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#cb_market':
+      return t("Protext node text by randomly juggling sentences in HTML and then fixing with Javascript!");
+  }
+} 
+
+function cb_market_menu() {
+  $items = array();
+ 
+  $items['admin/settings/cb_market'] = array(
+    'title' => t('cb_market Settings'),
+    'description' => t('cb_market text protection settings'),
+    'page callback' => 'drupal_get_form',
+     'page arguments' => array('cb_market_admin_settings_form', NULL),
+    'access callback' => 'user_access',
+     'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+  ); 
+
+  return $items;
+}
+ 
+function cb_market_admin_settings_form() {
+  $form['cb_market_nodes'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Article administrator email'),
+      '#description' =>  t('Email to send notice when new articles are added from feed.'),
+      '#required' => TRUE,
+      '#default_value' => variable_get('isnare_administrator', variable_get('site_mail', '')),
+  );
+
+  // Toggle node display.
+  $node_types = node_get_types('names');
+  if ($node_types) {
+      $form['protext_nodes'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Protect nodes of type'),
+        '#description' => t('This will apply cb_market text protection to these nodes.'),
+      );
+      foreach ($node_types as $type => $name) {
+        $form['protext_nodes'][$type] = array(
+         '#type' => 'fieldset',
+         '#title' => check_plain($name),
+         '#collapsible' => TRUE,
+         '#collapsed' => (! variable_get("cb_market_toggle_node_$type", FALSE)),
+        );
+        $form['protext_nodes'][$type]["cb_market_toggle_node_$type"] = array(
+          '#type' => 'checkbox', '#title' => check_plain($name),
+          '#default_value' => variable_get("cb_market_toggle_node_$type", FALSE)
+        );
+        $form['protext_nodes'][$type]["cb_market_node_body_id_$type"] = array(
+          '#type' => 'textfield', '#title' => check_plain(t('CSS ID identifying body text of a "'). $name .'"'),
+          '#default_value' => variable_get("cb_market_node_body_id_$type", ''), '#cols' => 3,
+        );
+      }
+  }
+ return system_settings_form($form);
+} 
+
+function cb_market_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+  cache_clear_all("cb_market_page_{$node->nid}", 'cache_page');
+  switch ($op) {
+    case 'delete': 
+    case 'update':
+      cache_clear_all("cb_market_page_{$node->nid}", 'cache_page');
+     break;
+    case 'alter':
+     if (variable_get("cb_market_toggle_node_{$node->type}", FALSE)) { 
+       $body_id = variable_get("cb_market_node_body_id_{$node->type}", '');  
+       if ($body = _cb_market_modify_node_body_cached($node, $body_id)) $node->body = $body;
+     }
+     break;
+  }
+}
+
+function  _cb_marketcharset_decode_utf_8($string) {
+      /* Only do the slow convert if there are 8-bit characters */
+    /* avoid using 0xA0 (\240) in ereg ranges. RH73 does not like that */
+    if (! ereg("[\200-\237]", $string) and ! ereg("[\241-\377]", $string))
+        return $string;
+
+    // decode three byte unicode characters
+    $string = preg_replace("/([\340-\357])([\200-\277])([\200-\277])/e",
+    "'&#'.((ord('\\1')-224)*4096 + (ord('\\2')-128)*64 + (ord('\\3')-128)).';'",
+    $string);
+
+    // decode two byte unicode characters
+    $string = preg_replace("/([\300-\337])([\200-\277])/e",
+    "'&#'.((ord('\\1')-192)*64+(ord('\\2')-128)).';'",
+    $string);
+
+    return $string;
+}
+
+function  _cb_market_modify_node_body_cached($node, $id='article_main') {
+  global $user;
+  if ($node->aid) $aid_display = "<div style='position:absolute; top:-5px; right:-5px; background: #FFFF99; border:1px dashed silver; color: navy; padding:5px; margin:-5px;'>aid: {$node->aid}</div>";
+  if ($user->uid==1) $replace_verify_outline = " style='border:2px dashed silver; padding:0; margin:10px; position:relative;'"; // dash around corrected text when UID = 1 for verification purposes
+
+ $cid = "cb_market_page_{$node->nid}";
+ if ($body = cache_get($cid, 'cache_page')) return $body->data;
+ $body = _cb_marketcharset_decode_utf_8($node->body);
+ $juggled_text = _cb_market_filter_sentence_juggler($body, $node->nid);
+ $juggled_text = "<div id='cb_market_{$node->nid}' class='juggled'> {$juggled_text} </div>";
+ $correct_text = "<div{$replace_verify_outline}>{$aid_display}". _cb_market_innerHTML_byid($body, $id) ."</div>";
+ //$correct_text = _cb_market_innerHTML_byid($body, $id);
+ $enc_correct_text = trim(chunk_split(base64_encode($correct_text), 200, "\n"));
+ $enc_correct_text = explode("\n", $enc_correct_text);
+ foreach ($enc_correct_text as $i=>$line) $enc_correct_text[$i] = '"'. $line .'"';
+ $enc_correct_text = implode(" +\n", $enc_correct_text);
+ drupal_add_js();
+
+$js = "\n\n". '<script type="text/javascript">
+var advert = '. $enc_correct_text .'; 
+$(document).ready(function() {$("#'. $id .'").html(decode_ad(advert));});
+function decode_ad(input){var keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";var output="";var chr1,chr2,chr3="";var enc1,enc2,enc3,enc4="";var i=0;
+ input=input.replace(/[^A-Za-z0-9\+\/\=]/g,"");do{enc1=keyStr.indexOf(input.charAt(i++));enc2=keyStr.indexOf(input.charAt(i++));enc3=keyStr.indexOf(input.charAt(i++));
+ enc4=keyStr.indexOf(input.charAt(i++));chr1=(enc1<<2)|(enc2>>4);chr2=((enc2&15)<<4)|(enc3>>2);chr3=((enc3&3)<<6)|enc4;output=output+String.fromCharCode(chr1);
+ if(enc3!=64){output=output+String.fromCharCode(chr2)}if(enc4!=64){output=output+String.fromCharCode(chr3)}chr1=chr2=chr3="";enc1=enc2=enc3=enc4=""}while(i<input.length);return output}
+</script>  ' ."\n\n";
+
+ $body = $juggled_text.$js;  
+ cache_set($cid, $body, 'cache_page', strtotime('+2 month'));
+ return $body;
+}
+
+function  _cb_market_innerHTML_byid($html, $id) {
+ $html = _filter_htmlcorrector($html);
+ $dom = new DOMDocument(); 
+ @$dom->loadHTML($html);
+ $xpath = new DOMXPath($dom);
+ // Put your XPath Query here
+ $my_xpath_query = "//*[@id='{$id}']";
+
+ $nodes = $xpath->query($my_xpath_query);
+ if ($nodes->length) {
+  $node = $nodes->item(0);
+  // loop through elements adding them to a temp document and then export the document
+  $children = $node->childNodes;
+  foreach ($children as $child) {
+    $tmp_doc = new DOMDocument();
+    $tmp_doc->appendChild($tmp_doc->importNode($child, true));
+    $innerHTML .= $tmp_doc->saveHTML();
+   }
+  return $innerHTML;
+ }
+}
+
+function _cb_market_filter_sentence_juggler($text, $nid=0) {
+  $text = str_replace('<p>', "\n<p>", $text);
+  $text = str_replace('</p>', "</p>\n", $text);
+  $text = str_replace("\n\n\n", "\n", $text); $text = str_replace("\n\n", "\n", $text);
+  
+  $lines = explode("\n", $text);
+  foreach ($lines as $line) {
+   $line = trim($line);
+   if ($line && (substr($line, 0, 3)=='<p>') && (substr($line, -4, 4)=='</p>')) {
+     $line = trim(substr($line, 3, strlen($line) - 7));
+     $prefix = '';
+     // remove beginning if numbered list
+     if (is_numeric(substr($line,0,1))) {
+      $prefix = substr($line, 0, strpos($line, ' '));
+      $line = trim(substr($line, strlen($prefix), strlen($line))); 
+     }
+     $line = _cb_market_sentence_split($line);
+     srand($nid); mt_srand($nid); // yeah, this no longer works reliably
+     shuffle($line);
+     $line = "\n<p>". $prefix.' '. implode(" ", $line) ."</p>\n";
+   } 
+   if (!empty($line)) $new[] = $line;
+  }
+  $text = implode("\n", $new);
+  return $text;
+}
+
+function _cb_market_sentence_split($sentence_split) {
+    $sentence_split = preg_replace(array('/[!]+/','/[?]+/','/[.]+/'),
+                                   array('!','?','.'),$sentence_split);
+    $sentences = preg_split("/(\!|\.|\?|\n)/", $sentence_split, -1, PREG_SPLIT_DELIM_CAPTURE);
+    $i=1; while($i<=count($sentences))  { 
+     if($sentence = trim(trim($sentences[$i-1]).trim($sentences[$i]))) $result[]=$sentence;
+     $i+=2;
+    }
+    return $result;
+}
+
+function cb_market_cron(){
+  // download and decompress cb_market file
+    // determine file destination
+    // in clude library
+    // download sucker
+
+ // pull into XML object and parse it out into database records
+
+  
+
+
+}

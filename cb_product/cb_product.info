@@ -1,0 +1,6 @@
+name = Clickbank Product
+description = Provides a product node making it easy to create a clickbank product 
+package = "* CB"
+core = 6.x
+ 
+
